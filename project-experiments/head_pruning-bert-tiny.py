@@ -1,3 +1,10 @@
+"""
+Attention head pruning experiment on bert-tiny fine-tuned for IMDB sentiment classification.
+Instruments SDPA nodes to collect per-head output norms, uses global importance ranking
+to decide which heads to keep, prunes weights accordingly, then fine-tunes and evaluates
+accuracy and throughput across keep ratios [1.0, 0.75, 0.5, 0.25].
+"""
+
 import math, time
 import numpy as np
 import torch
@@ -10,12 +17,9 @@ from chop.tools import get_tokenized_dataset
 from transformers import DataCollatorWithPadding
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-MODEL_CKPT = "/vol/bitbucket/ug22/adls-data/models/bert-base-imdb-baseline"
-TOKENIZER_CKPT = "bert-base-uncased"
+CKPT = "/vol/bitbucket/ug22/adls-data/models/bert-tiny-imdb-baseline"
 
-# === Data ===
-
-dataset, tokenizer = get_tokenized_dataset(dataset="imdb", checkpoint=TOKENIZER_CKPT, return_tokenizer=True)
+dataset, tokenizer = get_tokenized_dataset(dataset="imdb", checkpoint="DeepWokLab/bert-tiny", return_tokenizer=True)
 collator = DataCollatorWithPadding(tokenizer)
 
 def make_loader(split, bs, shuffle=False):
@@ -25,7 +29,6 @@ def make_loader(split, bs, shuffle=False):
 train_loader = make_loader("train", 32, shuffle=True)
 eval_loader = make_loader("test", 64)
 
-# === Eval ===
 
 @torch.no_grad()
 def eval_accuracy(model, loader, device=DEVICE):
@@ -129,11 +132,6 @@ def find_sdpa_contexts(mg):
 
 
 def decide_heads_to_keep(imp_modules, keep_ratio=0.5):
-    """
-    Global pruning: rank ALL heads across ALL layers by L2 norm,
-    keep the top keep_ratio fraction. Always keep at least 1 per layer.
-    """
-    # Collect all (layer, head, score) tuples
     all_heads = []
     for layer_idx, mod in imp_modules.items():
         scores = mod.get_scores()
@@ -143,24 +141,19 @@ def decide_heads_to_keep(imp_modules, keep_ratio=0.5):
     total = len(all_heads)
     n_keep = max(1, int(round(total * keep_ratio)))
 
-    # Sort by score descending, take top n_keep
     all_heads.sort(key=lambda x: x[2], reverse=True)
     kept = all_heads[:n_keep]
 
-    # Ensure at least 1 head per layer
     layers = set(layer for layer, _, _ in all_heads)
     for layer in layers:
         if not any(l == layer for l, _, _ in kept):
-            # Add back the best head from this layer
             best = max((x for x in all_heads if x[0] == layer), key=lambda x: x[2])
             kept.append(best)
 
-    # Build dict
     heads_to_keep = {}
     for layer, head, score in kept:
         heads_to_keep.setdefault(layer, []).append(head)
 
-    # Fill in layers that aren't in the dict (keep all)
     num_heads_per_layer = {layer: len(mod.get_scores()) for layer, mod in imp_modules.items()}
     for layer, nh in num_heads_per_layer.items():
         if layer not in heads_to_keep:
@@ -230,26 +223,20 @@ def fine_tune(model, train_loader, eval_loader, epochs=1, lr=2e-5, device=DEVICE
     return model
 
 
-# === Main experiment ===
+KEEP_RATIOS = [1.0, 0.75, 0.5, 0.25]
 
-KEEP_RATIOS = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.3, 0.2, 0.1]
-
-# Baseline
 print("=== BASELINE ===")
-mg = MaseGraph.from_checkpoint(MODEL_CKPT)
+mg = MaseGraph.from_checkpoint(CKPT)
 baseline_acc = eval_accuracy(mg.model, eval_loader)
 print("GPU:"); eval_speed(mg.model, eval_loader, "cuda")
 print("CPU:"); eval_speed(mg.model, eval_loader, "cpu")
 
-# Profile once
 print("\n=== PROFILE ===")
 mg, imp_modules = instrument_sdpa_pass(mg)
 calibrate(mg.model, imp_modules, eval_loader, n_batches=100)
 for i, mod in imp_modules.items():
     print(f"SDPA {i}: {['%.4f' % s for s in mod.get_scores()]}")
 
-# Sweep
-# In the sweep loop, also collect speed and params:
 results = []
 for ratio in KEEP_RATIOS:
     print(f"\n{'='*40}")
@@ -260,7 +247,7 @@ for ratio in KEEP_RATIOS:
     for layer, heads in sorted(heads_to_keep.items()):
         print(f"  SDPA {layer}: keep heads {heads}")
 
-    mg_p = MaseGraph.from_checkpoint(MODEL_CKPT)
+    mg_p = MaseGraph.from_checkpoint(CKPT)
     mg_p = prune_heads_pass(mg_p, heads_to_keep)
     pruned_acc = eval_accuracy(mg_p.model, eval_loader)
 
@@ -270,8 +257,6 @@ for ratio in KEEP_RATIOS:
     else:
         ft_acc = pruned_acc
 
-    # Collect speed
-    import io, contextlib
     def get_speed(model, loader, device):
         model.eval().to(device)
         compiled = torch.compile(model)
@@ -298,7 +283,6 @@ for ratio in KEEP_RATIOS:
         "gpu": gpu_throughput, "cpu": cpu_throughput, "params": params,
     })
 
-# Final summary
 print(f"\n{'='*80}")
 print(f"{'Ratio':>6} {'Pruned':>8} {'Finetuned':>9} {'vs Base':>8} {'Params':>10} {'GPU s/s':>9} {'CPU s/s':>9}")
 print(f"{'='*80}")
@@ -306,3 +290,4 @@ for r in results:
     print(f"{r['ratio']:>6.0%} {r['pruned']*100:>7.2f}% {r['finetuned']*100:>8.2f}% "
           f"{(r['finetuned']-baseline_acc)*100:>+7.2f}% {r['params']:>10,} "
           f"{r['gpu']:>8.0f} {r['cpu']:>8.0f}")
+

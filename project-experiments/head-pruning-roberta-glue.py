@@ -1,3 +1,11 @@
+"""
+Attention head pruning experiment on roberta-base fine-tuned for GLUE MNLI (3-class NLI).
+Instruments SDPA nodes to collect per-head output norms, uses global importance ranking
+to decide which heads to keep, prunes weights accordingly, then fine-tunes with a linear
+warmup/decay scheduler and evaluates accuracy and GPU throughput across keep ratios
+[1.0, 0.8, 0.6, 0.4, 0.2].
+"""
+
 import math, time
 import numpy as np
 import torch
@@ -12,8 +20,6 @@ from datasets import load_dataset
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MODEL_CKPT = "/vol/bitbucket/ug22/adls-data/models/roberta-base-glue-mnli-baseline"
 TOKENIZER_CKPT = "roberta-base"
-
-# === Data ===
 
 raw = load_dataset("glue", "mnli")
 raw = raw.filter(lambda x: x["label"] >= 0)
@@ -33,11 +39,9 @@ def make_loader(split, bs, shuffle=False, use_fixed_padding=False):
     collator = default_data_collator if use_fixed_padding else train_collator
     return DataLoader(ds, batch_size=bs, shuffle=shuffle, collate_fn=collator)
 
-# Dynamic padding for training (faster), fixed padding for eval/speed (consistent)
 train_loader = make_loader("train", 32, shuffle=True, use_fixed_padding=False)
 eval_loader = make_loader("test", 64, use_fixed_padding=True)
 
-# === Eval ===
 
 @torch.no_grad()
 def eval_accuracy(model, loader, device=DEVICE):
@@ -141,10 +145,6 @@ def find_sdpa_contexts(mg):
 
 
 def decide_heads_to_keep(imp_modules, keep_ratio=0.5):
-    """
-    Global pruning: rank ALL heads across ALL layers by L2 norm,
-    keep the top keep_ratio fraction. Always keep at least 1 per layer.
-    """
     all_heads = []
     for layer_idx, mod in imp_modules.items():
         scores = mod.get_scores()
@@ -241,24 +241,19 @@ def fine_tune(model, train_loader, eval_loader, epochs=1, lr=2e-5, device=DEVICE
     return model
 
 
-# === Main experiment ===
-
 KEEP_RATIOS = [1.0, 0.8, 0.6, 0.4, 0.2]
 
-# Baseline
 print("=== BASELINE ===")
 mg = MaseGraph.from_checkpoint(MODEL_CKPT)
 baseline_acc = eval_accuracy(mg.model, eval_loader)
 print("GPU:"); eval_speed(mg.model, eval_loader, "cuda")
 
-# Profile once
 print("\n=== PROFILE ===")
 mg, imp_modules = instrument_sdpa_pass(mg)
 calibrate(mg.model, imp_modules, eval_loader, n_batches=100)
 for i, mod in imp_modules.items():
     print(f"SDPA {i}: {['%.4f' % s for s in mod.get_scores()]}")
 
-# Sweep
 results = []
 for ratio in KEEP_RATIOS:
     print(f"\n{'='*40}")
@@ -279,7 +274,6 @@ for ratio in KEEP_RATIOS:
     else:
         ft_acc = pruned_acc
 
-    # Collect GPU speed
     def get_speed(model, loader, device="cuda"):
         model.eval().to(device)
         compiled = torch.compile(model)
@@ -305,7 +299,6 @@ for ratio in KEEP_RATIOS:
         "gpu": gpu_throughput, "params": params,
     })
 
-# Final summary
 print(f"\n{'='*80}")
 print(f"{'Ratio':>6} {'Pruned':>8} {'Finetuned':>9} {'vs Base':>8} {'Params':>10} {'GPU s/s':>9}")
 print(f"{'='*80}")
