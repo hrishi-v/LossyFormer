@@ -16,9 +16,23 @@ source .venv/bin/activate
 python lf_tests/example.py # Executes the lossy.fit() method
 ```
 
+**TL:DR Test**
+
+To quickly run all unit test then execute LossyFormer on the compatible models, use the following commands.
+
+```sh
+chmod +x test_all.sh
+./test_all.sh
+```
+
 **Individual tests**
 
-Defined below are the commands to run LossyFormer on BERT-Base and RoBERTa-Base.
+Defined below are the commands to run LossyFormer on BERT-Tiny, BERT-Base and RoBERTa-Base.
+
+```sh
+# Run the sync and source the .venv first!
+python lf_tests/lf-testing.py --model bert-tiny # Executes the lossy.fit() method on the IMDB-trained BERT-Tiny model
+```
 
 ```sh
 # Run the sync and source the .venv first!
@@ -32,12 +46,9 @@ python lf_tests/lf-testing.py --model roberta # Executes the lossy.fit() method 
 
 Bear in mind, this will take a *long* while, so might be best to see how it works and interrupt it :). The `step_keep_ratio` is set to 0.9 by default but can be changed to control the aggressiveness of head pruning. While a smaller `step_keep_ratio` will converge faster, it may prune too aggressively per iteration to find the best tradeoff between accuracy drop and latency for a model.
 
-**All Tests**
+**Unit Testing**
 
-```sh
-chmod +x test_all.sh
-./test_all.sh
-```
+To run all the unit tests, run `pytest`.
 
 ## Future Goals
 
