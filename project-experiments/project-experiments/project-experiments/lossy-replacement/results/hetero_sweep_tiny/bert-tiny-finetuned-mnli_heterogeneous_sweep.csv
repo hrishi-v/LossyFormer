@@ -1,0 +1,4 @@
+GeLUs_Replaced,Total_GeLUs,FP32_Accuracy,PTQ_INT8_Accuracy,QAT_INT8_Accuracy
+0,2,0.699,0.4364,0.6066
+1,2,0.452,0.4395,0.603
+2,2,0.452,0.436,0.6022

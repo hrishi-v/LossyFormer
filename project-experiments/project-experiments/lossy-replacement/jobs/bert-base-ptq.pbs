@@ -1,0 +1,32 @@
+#!/bin/bash
+# --- PBS Directives ---
+#PBS -lwalltime=06:00:00
+#PBS -lselect=1:ncpus=8:mem=32gb:ngpus=1
+#PBS -N bert_base_ptq
+#PBS -j oe
+#PBS -o ../results/bert_base_ptq.txt
+
+# --- Environment Setup ---
+cd $PBS_O_WORKDIR
+module load Python/3.12.3-GCCcore-13.3.0
+echo "Starting Base run on $(hostname)"
+
+export PATH="$HOME/.local/bin:$PATH"
+
+# uv sync is commented out to prevent environment corruption if both jobs start together
+# uv sync
+source /rds/general/user/hv122/home/adls-project/.venv/bin/activate
+
+# --- Execution ---
+echo "Running BERT-Base PTQ..."
+python ../scripts/ptq_eval_bert.py \
+  --model_name "yoshitomo-matsubara/bert-base-uncased-mnli" \
+  --retrained_path /rds/general/user/hv122/home/adls-project/bert-base-no-gelu/bert-base-uncased-mnli_final_retrained \
+  --output_dir ../results
+
+if [ $? -ne 0 ]; then
+    echo "Training failed, aborting."
+    exit 1
+fi
+
+echo "Job completed successfully."

@@ -1,0 +1,4 @@
+Stage,Accuracy,VRAM_MB,Latency_ms,Throughput_seq_per_sec
+Pre-Swap,0.699,46.93,0.99,32342.4
+Post-Swap,0.4553,44.93,0.89,36053.0
+Retrained,0.6215,63.67,1.02,31404.7

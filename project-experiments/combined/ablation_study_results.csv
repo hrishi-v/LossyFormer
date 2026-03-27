@@ -1,0 +1,7 @@
+Architecture,Data Pipeline,Accuracy (%),GPU Throughput (seq/s),GPU Latency (ms/batch),Peak VRAM (MB)
+Base BERT,Static,82.02,474.22,134.96,1065.72
+Base BERT,Dynamic,82.02,611.21,104.71,1065.72
+Base BERT,Smart,82.02,1002.87,63.82,977.61
+LossyFormer,Static,80.94,323.92,197.58,2372.3
+LossyFormer,Dynamic,80.94,384.47,166.46,2372.3
+LossyFormer,Smart,80.94,536.05,119.39,2266.29

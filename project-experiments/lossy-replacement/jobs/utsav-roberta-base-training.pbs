@@ -1,0 +1,40 @@
+#!/bin/bash
+# --- PBS Directives ---
+#PBS -lwalltime=06:00:00
+#PBS -lselect=1:ncpus=8:mem=32gb:ngpus=1
+#PBS -N roberta_ptq
+#PBS -j oe
+#PBS -o ../results/roberta_ptq_logs.txt
+
+# --- Environment Setup ---
+cd $PBS_O_WORKDIR
+module load Python/3.12.3-GCCcore-13.3.0
+
+echo "Starting RoBERTa PTQ eval on $(hostname)"
+export PATH="$HOME/.local/bin:$PATH"
+source /rds/general/user/hv122/home/adls-project/.venv/bin/activate
+
+# --- RoBERTa ---
+echo "========== RoBERTa-Base =========="
+python ../scripts/ptq_eval_checkpoint.py \
+    --gelu_checkpoint /rds/general/user/hv122/home/adls-data/utsav/roberta-base-glue-mnli-baseline \
+    --relu_checkpoint /rds/general/user/hv122/home/adls-data/utsav/roberta-base-no-gelu \
+    --tokenizer_name roberta-base \
+    --model_label roberta-base \
+    --output_dir ../results
+
+# --- BERT-Base ---
+echo "========== BERT-Base =========="
+python ../scripts/ptq_eval_checkpoint.py \
+    --gelu_checkpoint /rds/general/user/hv122/home/adls-data/utsav/bert-base-glue-mnli-baseline \
+    --relu_checkpoint /rds/general/user/hv122/home/adls-data/utsav/bert-base-no-gelu \
+    --tokenizer_name bert-base-uncased \
+    --model_label bert-base \
+    --output_dir ../results
+
+if [ $? -ne 0 ]; then
+    echo "Quantisation failed."
+    exit 1
+fi
+
+echo "Job completed successfully."

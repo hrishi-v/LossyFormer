@@ -1,0 +1,27 @@
+#!/bin/bash
+# --- PBS Directives ---
+#PBS -lwalltime=06:00:00
+#PBS -lselect=1:ncpus=8:mem=32gb:ngpus=1
+#PBS -N utsav_roberta
+#PBS -j oe
+#PBS -o ../results/utsav_roberta_logs.txt
+
+cd $PBS_O_WORKDIR
+module load Python/3.12.3-GCCcore-13.3.0
+
+echo "Starting RoBERTa GeLU->ReLU from checkpoint on $(hostname)"
+export PATH="$HOME/.local/bin:$PATH"
+source /rds/general/user/hv122/home/adls-project/.venv/bin/activate
+
+python ../scripts/train_from_checkpoint.py \
+    --checkpoint /rds/general/user/hv122/home/adls-data/utsav/roberta-base-glue-mnli-baseline \
+    --tokenizer_name roberta-base \
+    --save_path /rds/general/user/hv122/home/adls-data/utsav/roberta-base-no-gelu \
+    --output_dir ../results
+
+if [ $? -ne 0 ]; then
+    echo "Training failed."
+    exit 1
+fi
+
+echo "Job completed successfully."

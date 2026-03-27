@@ -1,0 +1,5 @@
+Model,Variant,Bit_Width,Frac_Width,FP32_Accuracy,Quantized_Accuracy,Accuracy_Drop
+bert-tiny-finetuned-mnli,GeLU (original),16,8,0.699,0.4526,0.2465
+bert-tiny-finetuned-mnli,GeLU (original),8,4,0.699,0.4364,0.2627
+bert-tiny-finetuned-mnli,ReLU (retrained),16,8,0.6215,0.6059,0.0156
+bert-tiny-finetuned-mnli,ReLU (retrained),8,4,0.6215,0.581,0.0404

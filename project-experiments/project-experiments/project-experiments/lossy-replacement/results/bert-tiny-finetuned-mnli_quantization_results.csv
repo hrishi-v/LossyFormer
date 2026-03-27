@@ -1,0 +1,3 @@
+Model,Variant,FP32_Size_MB,INT8_Size_MB,Compression,FP32_Accuracy,INT8_Accuracy,Accuracy_Drop,FP32_Latency_ms,INT8_Latency_ms,FP32_Throughput,INT8_Throughput
+bert-tiny-finetuned-mnli,GeLU (original),16.75,15.59,1.07,0.699,0.6958,0.0033,13.44,11.53,2380.7,2774.6
+bert-tiny-finetuned-mnli,ReLU (retrained),16.75,15.59,1.07,0.6215,0.6226,-0.0011,13.19,11.04,2425.5,2899.8
