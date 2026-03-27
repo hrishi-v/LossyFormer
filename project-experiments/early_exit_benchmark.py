@@ -1,17 +1,31 @@
+"""
+Early Exit Benchmark Suite: BERT and RoBERTa on MNLI
+
+This script provides a standardized benchmarking environment to evaluate the 
+accuracy-latency trade-offs of Early Exit models compared to their full-depth baselines.
+
+Key features:
+- Entropy-based exit criteria.
+- Automated threshold sweeping for Pareto front characterization.
+- Support for both BERT and RoBERTa architectures via a shared EarlyExitMixin.
+- GPU-synchronized timing for accurate latency measurement.
+"""
+
 import os
 import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
-from transformers import AutoModelForSequenceClassification, AutoTokenizer, default_data_collator
-from torch.utils.data import DataLoader
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+from torch.utils.data import DataLoader, default_collate
 from datasets import load_dataset
 from chop import MaseGraph
-import matplotlib.pyplot as plt
 
 # === Configuration ===
+# Note: Ensure these paths are accessible or updated for the target environment
 BERT_CKPT = "/vol/bitbucket/ug22/adls-data/models/bert-base-glue-mnli-baseline"
 ROBERTA_CKPT = "/vol/bitbucket/ug22/adls-data/models/roberta-base-glue-mnli-baseline"
 NUM_LABELS = 3
@@ -19,18 +33,13 @@ BATCH_SIZE = 32
 THRESHOLDS = [0.0, 0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
 PLOT_PATH = "benchmark_results.png"
 
-if torch.cuda.is_available():
-    DEVICE = torch.device("cuda")
-    print("Using CUDA device:", torch.cuda.get_device_name(0))
-else:
-    DEVICE = torch.device("cpu")
-    print("CUDA not available — using CPU")
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {DEVICE}")
 
 # === Data Loading ===
 def get_dataloader(tokenizer_ckpt):
     print(f"Preparing data for {tokenizer_ckpt}...")
-    raw_mnli = load_dataset("glue", "mnli")
-    raw_mnli = raw_mnli.filter(lambda x: x["label"] >= 0)
+    raw_mnli = load_dataset("glue", "mnli").filter(lambda x: x["label"] >= 0)
     raw_mnli["test"] = raw_mnli["validation_matched"]
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_ckpt)
@@ -38,53 +47,44 @@ def get_dataloader(tokenizer_ckpt):
         return tokenizer(x["premise"], x["hypothesis"], truncation=True, padding="max_length", max_length=128)
     
     ds = raw_mnli.map(tokenize_fn, batched=True)
-    cols_to_remove = [c for c in ds["test"].column_names if c not in ["input_ids", "attention_mask", "label"]]
-    ds_test = ds["test"].remove_columns(cols_to_remove).rename_column("label", "labels")
+    keep = ["input_ids", "attention_mask", "label"]
+    ds_test = ds["test"].remove_columns([c for c in ds["test"].column_names if c not in keep]).rename_column("label", "labels")
     
-    # Using 50% of the validation matched set as requested by user
+    # Using 50% split for evaluation speed
     ds_split = ds_test.train_test_split(test_size=0.5, seed=42)
-    dataloader = DataLoader(ds_split["test"], batch_size=BATCH_SIZE, collate_fn=default_data_collator)
-    return dataloader
+    return DataLoader(ds_split["test"], batch_size=BATCH_SIZE, collate_fn=default_collate, shuffle=False)
 
 # === Evaluation Functions ===
 @torch.no_grad()
-def eval_accuracy(model, dataloader, device="cuda"):
+def eval_metrics(model, dataloader, device="cuda"):
     model.eval()
     correct, total = 0, 0
-    for batch in tqdm(dataloader, desc="Eval Accuracy", leave=False):
+    times = []
+    
+    # Warmup
+    it = iter(dataloader)
+    for _ in range(5):
+        try: batch = next(it)
+        except StopIteration: break
         batch = {k: v.to(device) for k, v in batch.items()}
+        model(**batch)
+    
+    if "cuda" in str(device): torch.cuda.synchronize()
+
+    for batch in tqdm(dataloader, desc="Evaluating", leave=False):
+        batch = {k: v.to(device) for k, v in batch.items()}
+        
+        if "cuda" in str(device): torch.cuda.synchronize()
+        t0 = time.perf_counter()
         out = model(**batch)
+        if "cuda" in str(device): torch.cuda.synchronize()
+        times.append(time.perf_counter() - t0)
+        
         logits = out["logits"] if isinstance(out, dict) else out.logits
         correct += (logits.argmax(dim=-1) == batch["labels"]).sum().item()
         total += batch["labels"].size(0)
-    return correct / total
-
-@torch.no_grad()
-def eval_speed(model, dataloader, device="cuda", num_batches=100, warmup=10):
-    model.eval()
-    batches = list(dataloader)[:warmup + num_batches]
-    # warmup
-    for b in batches[:warmup]:
-        model(**{k: v.to(device) for k, v in b.items()})
     
-    if "cuda" in str(device):
-        torch.cuda.synchronize()
-
-    # timed
-    times, samples = [], 0
-    for b in batches[warmup:]:
-        batch_inputs = {k: v.to(device) for k, v in b.items()}
-        if "cuda" in str(device):
-            torch.cuda.synchronize()
-        t0 = time.perf_counter()
-        model(**batch_inputs)
-        if "cuda" in str(device):
-            torch.cuda.synchronize()
-        times.append(time.perf_counter() - t0)
-        samples += b["input_ids"].size(0)
-    
-    avg_per_batch_ms = np.mean(times) * 1000
-    return avg_per_batch_ms
+    return (correct / total), (np.mean(times) * 1000)
 
 # === Model Implementation ===
 class EarlyExitMixin:
@@ -107,7 +107,6 @@ class EarlyExitMixin:
         entropy = -torch.sum(probs * torch.log(probs + 1e-9), dim=-1)
         confident = entropy <= self.threshold
         final_logits[active_indices[confident]] = logits[confident]
-        print("confident", confident.sum().item())
         return ~confident
 
     def set_threshold(self, threshold):
@@ -183,77 +182,61 @@ class RobertaEarlyExit(nn.Module, EarlyExitMixin):
 
 # === Main Experiment ===
 def main():
-    # 1. Prepare Data
     bert_loader = get_dataloader("bert-base-uncased")
     roberta_loader = get_dataloader("roberta-base")
 
-    # 2. Setup Models
-    print("Loading BERT base...")
+    print("Loading Models...")
     bert_mg = MaseGraph.from_checkpoint(BERT_CKPT)
     bert_baseline = bert_mg.model.to(DEVICE)
     bert_hf = AutoModelForSequenceClassification.from_pretrained("bert-base-uncased", num_labels=NUM_LABELS).to(DEVICE)
     bert_hf.load_state_dict(bert_baseline.state_dict(), strict=False)
-    bert_ee = BertEarlyExit(bert_hf, threshold=2)
+    bert_ee = BertEarlyExit(bert_hf)
 
-    print("Loading RoBERTa base...")
     roberta_mg = MaseGraph.from_checkpoint(ROBERTA_CKPT)
     roberta_baseline = roberta_mg.model.to(DEVICE)
     roberta_hf = AutoModelForSequenceClassification.from_pretrained("roberta-base", num_labels=NUM_LABELS).to(DEVICE)
     roberta_hf.load_state_dict(roberta_baseline.state_dict(), strict=False)
-    roberta_ee = RobertaEarlyExit(roberta_hf, threshold=2)
+    roberta_ee = RobertaEarlyExit(roberta_hf)
 
-    # 3. Run Benchmarks
-    def run_experiment(model, baseline, loader, name):
-        print(f"\nBenchmarking {name}...")
+    def run_benchmark(model, baseline, loader, name):
+        print(f"\n--- {name} Benchmark ---")
+        base_acc, base_lat = eval_metrics(baseline, loader, DEVICE)
+        print(f"Baseline: Accuracy={base_acc*100:.2f}%, Latency={base_lat:.2f}ms")
+
         ee_accs, ee_lats = [], []
         for t in THRESHOLDS:
             model.set_threshold(t)
-            acc = eval_accuracy(model, loader, DEVICE) * 100
-            lat = eval_speed(model, loader, DEVICE)
-            print(f"Threshold {t}: Accuracy={acc:.2f}%, Latency={lat:.2f}ms")
-            ee_accs.append(acc)
+            acc, lat = eval_metrics(model, loader, DEVICE)
+            print(f"Threshold {t}: Accuracy={acc*100:.2f}%, Latency={lat:.2f}ms")
+            ee_accs.append(acc * 100)
             ee_lats.append(lat)
-        
-        print(f"Benchmarking {name} Baseline...")
-        base_acc = eval_accuracy(baseline, loader, DEVICE) * 100
-        base_lat = eval_speed(baseline, loader, DEVICE)
-        print(f"Baseline: Accuracy={base_acc:.2f}%, Latency={base_lat:.2f}ms")
-        return ee_accs, ee_lats, base_acc, base_lat
+        return ee_accs, ee_lats, base_acc * 100, base_lat
 
-    bert_accs, bert_lats, bert_base_acc, bert_base_lat = run_experiment(bert_ee, bert_baseline, bert_loader, "BERT")
-    roberta_accs, roberta_lats, roberta_base_acc, roberta_base_lat = run_experiment(roberta_ee, roberta_baseline, roberta_loader, "RoBERTa")
+    bert_accs, bert_lats, bert_b_acc, bert_b_lat = run_benchmark(bert_ee, bert_baseline, bert_loader, "BERT")
+    rob_accs, rob_lats, rob_b_acc, rob_b_lat = run_benchmark(roberta_ee, roberta_baseline, roberta_loader, "RoBERTa")
 
-    # 4. Plotting
-    print("\nGenerating plot...")
+    # Plotting
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
 
-    # BERT Plot
-    ax1.plot(bert_lats, bert_accs, 'o-', label='Early Exit BERT', color='blue')
-    ax1.axhline(y=bert_base_acc, color='red', linestyle='--', label=f'Baseline ({bert_base_acc:.2f}%)')
-    ax1.axvline(x=bert_base_lat, color='green', linestyle=':', label=f'Baseline Latency ({bert_base_lat:.2f}ms)')
-    for i, t in enumerate(THRESHOLDS):
-        ax1.annotate(f"T={t}", (bert_lats[i], bert_accs[i]), textcoords="offset points", xytext=(0,10), ha='center')
-    ax1.set_xlabel('Latency (ms/batch)')
-    ax1.set_ylabel('Accuracy (%)')
-    ax1.set_title('BERT Early Exit: Accuracy vs Latency')
-    ax1.legend()
-    ax1.grid(True)
+    def plot_res(ax, lats, accs, b_lat, b_acc, title, color):
+        ax.plot(lats, accs, 'o-', label='Early Exit', color=color)
+        ax.axhline(y=b_acc, color='red', linestyle='--', label=f'Baseline ({b_acc:.1f}%)')
+        ax.axvline(x=b_lat, color='green', linestyle=':', label=f'Base Latency ({b_lat:.1f}ms)')
+        for i, t in enumerate(THRESHOLDS):
+            ax.annotate(f"{t}", (lats[i], accs[i]), textcoords="offset points", xytext=(0,10), ha='center', fontsize=8)
+        ax.set_xlabel('Latency (ms/batch)')
+        ax.set_ylabel('Accuracy (%)')
+        ax.set_title(title)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
 
-    # RoBERTa Plot
-    ax2.plot(roberta_lats, roberta_accs, 's-', label='Early Exit RoBERTa', color='purple')
-    ax2.axhline(y=roberta_base_acc, color='red', linestyle='--', label=f'Baseline ({roberta_base_acc:.2f}%)')
-    ax2.axvline(x=roberta_base_lat, color='green', linestyle=':', label=f'Baseline Latency ({roberta_base_lat:.2f}ms)')
-    for i, t in enumerate(THRESHOLDS):
-        ax2.annotate(f"T={t}", (roberta_lats[i], roberta_accs[i]), textcoords="offset points", xytext=(0,10), ha='center')
-    ax2.set_xlabel('Latency (ms/batch)')
-    ax2.set_ylabel('Accuracy (%)')
-    ax2.set_title('RoBERTa Early Exit: Accuracy vs Latency')
-    ax2.legend()
-    ax2.grid(True)
+    plot_res(ax1, bert_lats, bert_accs, bert_b_lat, bert_b_acc, "BERT Early Exit", "blue")
+    plot_res(ax2, rob_lats, rob_accs, rob_b_lat, rob_b_acc, "RoBERTa Early Exit", "purple")
 
     plt.tight_layout()
     plt.savefig(PLOT_PATH)
-    print(f"Plot saved to {PLOT_PATH}")
+    print(f"Benchmark results saved to {PLOT_PATH}")
 
 if __name__ == "__main__":
     main()
+
