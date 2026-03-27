@@ -28,7 +28,7 @@ python lf_tests/lf-testing.py --model bert-base # Executes the lossy.fit() metho
 python lf_tests/lf-testing.py --model roberta # Executes the lossy.fit() method on the MNLI-trained RoBERTa model
 ```
 
-Bear in mind, this will take a *long* while, so might be best to see how it works and interrupt it :)
+Bear in mind, this will take a *long* while, so might be best to see how it works and interrupt it :). The `step_keep_ratio` is set to 0.9 by default but can be changed to control the aggressiveness of head pruning. While a smaller `step_keep_ratio` will converge faster, it may prune too aggressively per iteration to find the best tradeoff between accuracy drop and latency for a model.
 
 **All Tests**
 
