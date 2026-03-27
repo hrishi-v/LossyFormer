@@ -349,7 +349,7 @@ class LossyFormer:
                     batched=True,
                 ).sort("length", reverse=True)
 
-            keep_cols = ["input_ids", "attention_mask", "label", "token_type_ids"]
+            keep_cols = ["input_ids", "attention_mask", "label"]
             remove_cols = [c for c in ds.column_names if c not in keep_cols]
 
             ds = ds.remove_columns(remove_cols).rename_column("label", "labels")

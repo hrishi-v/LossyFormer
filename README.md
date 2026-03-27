@@ -6,9 +6,12 @@
 
 This forms a suite of tools developed as part of the Spring 2026 ADLS module. It is aimed at optimising several transformer models for latency and throughput, whilst accepting minor, controlled accuracy drops. It is tested and working for BERT-Base, BERT-Tiny and RoBERTa.
 
+For further information on the intracacies of what our tool does and support for models, check [here](lossyformer/docs.md).
+
 ## Usage
 
 For an example of how to use the tool, see`lf_tests/example.py`. This demonstrates how to instantiate the class and call `lossy.fit()` on transformer models. We do this with a BERT-Tiny model, on the IMDB dataset, permitting an accuracy loss of 1.5%. Note that this is primarily provided as a sanity check that the tool works end-to-end.
+
 
 ```sh
 uv sync
@@ -20,6 +23,10 @@ python lf_tests/example.py # Executes the lossy.fit() method
 
 To quickly run all unit tests then execute a single LossyFormer pass at an accuracy drop of 3% on the compatible models, use the following commands. This is aimed at being primarily demonstrative, so we only use a single finetuning iteration and one pruning step.
 
+Take the finetuned models from this [SharePoint link](https://imperiallondon-my.sharepoint.com/:u:/r/personal/hv122_ic_ac_uk/Documents/models.zip?csf=1&web=1&e=iBeXvS).
+
+Use the models here: 
+
 ```sh
 chmod +x test_all.sh
 ./test_all.sh
@@ -29,16 +36,19 @@ chmod +x test_all.sh
 
 Defined below are the commands to run LossyFormer search sweeps with varying acceptable accuracy drops on BERT-Tiny, BERT-Base and RoBERTa-Base. Bear in mind, this will take a *long* while, so might be best to see how it works and interrupt it :). This is because all three are programmed to run a sweep across different acceptable accuracy losses.
 
+BERT-Tiny, trained on IMDB:
 ```sh
 # Run the sync and source the .venv first!
 python lf_tests/lf-testing.py --model bert-tiny # Executes the lossy.fit() method on the IMDB-trained BERT-Tiny model
 ```
 
+BERT-Base, trained on MNLI:
 ```sh
 # Run the sync and source the .venv first!
 python lf_tests/lf-testing.py --model bert-base # Executes the lossy.fit() method on the MNLI-trained BERT-Base model
 ```
 
+RoBERTa, trained on MNLI:
 ```sh
 # Run the sync and source the .venv first!
 python lf_tests/lf-testing.py --model roberta # Executes the lossy.fit() method on the MNLI-trained RoBERTa model
